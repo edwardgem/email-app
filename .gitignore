@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Logs / tmp
+*.log
+tmp/
+
+# Local Claude configs (keep tracked ones as needed)
+.claude/
+
+# Local environment
+.env
+
+# PM2 process management
+ecosystem.config.js
