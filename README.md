@@ -1,9 +1,11 @@
 # email-app (compose + author-agent + send-agent)
 
-A three-service rewrite of the email workflow:
+A three-service app of the email workflow:
 - **author-agent**: generates HTML email drafts (initial + regen).
 - **send-agent**: sends approved HTML emails.
 - **compose**: orchestrates author → send (HITL can be slotted later).
+
+**LangChain** translates user specs into HTML inside the author-agent; compose glues that output to send-agent and loop in the **HITL agent** for human oversight without re-implementing LLM logic elsewhere.
 
 ## Structure
 - `author-agent/` – generation service (uses `prompt.txt`, supports `base_html` regen path).
