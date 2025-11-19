@@ -1,4 +1,4 @@
-// email-agent: sends approved HTML emails to recipients (mailer stub).
+// send-agent: sends approved HTML emails to recipients (mailer stub).
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -14,8 +14,8 @@ const {
   loadInstanceEnv
 } = require('../shared');
 
-const PORT = Number(process.env.EMAIL_PORT || process.env.PORT || 4102);
-const SERVICE = 'email-agent';
+const PORT = Number(process.env.SEND_PORT || process.env.EMAIL_PORT || process.env.PORT || 4102);
+const SERVICE = 'send-agent';
 const RESEND_API = 'https://api.resend.com/emails';
 const GMAIL_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GMAIL_SEND_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
@@ -196,7 +196,7 @@ async function handleSend(req, res) {
   const { artifactsDir, draftHtml } = getInstancePaths(instance_id);
   ensureDir(artifactsDir);
   fs.writeFileSync(draftHtml, html, 'utf8');
-  appendLocalLog(instance_id, 'email-agent', 'Sending email via provider');
+  appendLocalLog(instance_id, 'send-agent', 'Sending email via provider');
 
   let sendResult;
   try {
@@ -237,5 +237,5 @@ function router(req, res) {
 }
 
 http.createServer(router).listen(PORT, () => {
-  console.log(`[email-agent] listening on ${PORT}`);
+  console.log(`[send-agent] listening on ${PORT}`);
 });

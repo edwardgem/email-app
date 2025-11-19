@@ -75,13 +75,17 @@ function buildPrompt({ instructions, baseHtml, promptText }) {
 
   const hasInstructions = instructions && instructions.trim();
   const keyBlock = hasInstructions ? `\n\n[KEY INSTRUCTIONS]\n${instructions.trim()}\n` : '';
+  const instructionReminder = hasInstructions
+    ? '\n\nWhen producing JSON, explicitly reference the [KEY INSTRUCTIONS] in reasoning.summary and reasoning.key_instructions (quote or closely paraphrase them) so it is obvious they were applied.'
+    : '\n\nIf there are no [KEY INSTRUCTIONS], rely solely on the base prompt.';
+  const enforcement = '\nEnsure the final HTML answer reflects every applicable instruction.';
   if (!baseHtml) {
-    const prompt = (hasInstructions ? `${promptText}${keyBlock}` : promptText) + `\n\n${jsonContract}`;
+    const prompt = (hasInstructions ? `${promptText}${keyBlock}` : promptText) + `${instructionReminder}${enforcement}\n\n${jsonContract}`;
     return { prompt, usedExistingHtml: false };
   }
   // With base HTML, focus on applying prompt + optional instructions to the provided HTML.
-  const header = 'Apply the prompt (and any key instructions) to the included HTML email to produce the updated HTML email.';
-  const prompt = `${header}\n\n${promptText}${keyBlock}\n\nHere is the current HTML email to modify:\n\n\`\`\`html\n${baseHtml}\n\`\`\`\n\n${jsonContract}`;
+  const header = 'Apply only the [KEY INSTRUCTIONS] (if provided) to the included HTML email to produce the updated HTML email.';
+  const prompt = `${header}${keyBlock}${instructionReminder}${enforcement}\n\nHere is the current HTML email to modify:\n\n\`\`\`html\n${baseHtml}\n\`\`\`\n\n${jsonContract}`;
   return { prompt, usedExistingHtml: true };
 }
 

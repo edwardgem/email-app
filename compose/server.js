@@ -1,4 +1,4 @@
-// compose orchestrator: calls author-agent then email-agent.
+// compose orchestrator: calls author-agent then send-agent.
 const http = require('http');
 const { URL } = require('url');
 const crypto = require('crypto');
@@ -19,7 +19,7 @@ const {
 const PORT = Number(process.env.PORT || 4100);
 const SERVICE = 'compose';
 const AUTHOR_URL = process.env.AUTHOR_AGENT_URL || 'http://127.0.0.1:4101';
-const EMAIL_URL = process.env.EMAIL_AGENT_URL || 'http://127.0.0.1:4102';
+const SEND_URL = process.env.SEND_AGENT_URL || process.env.EMAIL_AGENT_URL || 'http://127.0.0.1:4102';
 const HITL_URL = process.env.HITL_API_URL || 'http://127.0.0.1:3001/api/hitl-agent';
 
 async function parseJsonBody(req) {
@@ -85,8 +85,8 @@ async function callAuthorAgent(body) {
   return res.json();
 }
 
-async function callEmailAgent(body) {
-  const res = await fetch(`${EMAIL_URL}/send`, {
+async function callSendAgent(body) {
+  const res = await fetch(`${SEND_URL}/send`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
@@ -282,7 +282,7 @@ async function handleHitlCallback(req, res) {
       // Send using existing email.html
       const html = readLatestEmailHtml(instance_id);
       try {
-        await callEmailAgent({
+        await callSendAgent({
           instance_id,
           username: user,
           html,
@@ -393,15 +393,31 @@ async function handleComposeSend(req, res) {
   catch (_) { return sendJson(res, 400, { error: 'invalid_json' }); }
 
   let { instance_id } = payload || {};
-  const { username, instructions, regen_base_html: base_html = '', trace_id } = payload || {};
+  const {
+    username,
+    instructions,
+    regen_base_html: initialBaseHtml = '',
+    trace_id
+  } = payload || {};
   if (!username) return sendJson(res, 400, { error: 'username_required' });
-  if (!instructions && !base_html) return sendJson(res, 400, { error: 'instructions_required' });
+  if (!instructions && !initialBaseHtml) return sendJson(res, 400, { error: 'instructions_required' });
 
   if (!validateInstanceId(instance_id)) instance_id = generateInstanceId();
   const traceId = trace_id || crypto.randomBytes(6).toString('hex');
 
   const paths = getInstancePaths(instance_id);
   ensureDir(paths.root);
+
+  let baseHtmlPayload = initialBaseHtml;
+  if (!baseHtmlPayload) {
+    const latest = readLatestEmailHtml(instance_id);
+    if (latest) {
+      baseHtmlPayload = latest;
+      try {
+        appendLocalLog(instance_id, 'compose', 'auto-attached latest email.html for regeneration');
+      } catch (_) { /* ignore */ }
+    }
+  }
 
   const merged = mergeConfig(instance_id, payload || {});
   const recipients = requireRecipients(merged.to, merged.cc, merged.bcc);
@@ -453,7 +469,7 @@ async function handleComposeSend(req, res) {
       instance_id,
       username,
       instructions,
-      base_html,
+      base_html: baseHtmlPayload,
       subject: merged.subject,
       trace_id: traceId
     });

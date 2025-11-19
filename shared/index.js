@@ -1,4 +1,4 @@
-// Shared utilities for the email-app services (compose, author-agent, email-agent).
+// Shared utilities for the email-app services (compose, author-agent, send-agent).
 // Only standard library is used to avoid external dependencies.
 const fs = require('fs');
 const path = require('path');
