@@ -203,6 +203,181 @@ function readLatestEmailHtml(instanceId) {
   return '';
 }
 
+function safeJsonParse(raw, fallback = {}) {
+  if (!raw) return fallback;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch (_) {
+    return fallback;
+  }
+}
+
+// Lazily initialize LangChain tools/chains so existing workflows (AMP/HITL/log agent)
+// continue to function even if LangChain deps are missing.
+let langChainContextPromise = null;
+async function getLangChainContext() {
+  if (langChainContextPromise) return langChainContextPromise;
+  langChainContextPromise = (async () => {
+    try {
+      const [{ RunnableSequence, RunnableLambda }, { DynamicTool }] = await Promise.all([
+        import('@langchain/core/runnables'),
+        import('@langchain/core/tools')
+      ]);
+
+      const invokeTool = async (tool, payload) => {
+        const result = await tool.invoke(JSON.stringify(payload || {}));
+        return safeJsonParse(result, {});
+      };
+
+      const authorTool = new DynamicTool({
+        name: 'author_agent_generate',
+        description: 'Generate HTML email drafts via author-agent service.',
+        func: async (jsonInput) => {
+          const params = safeJsonParse(jsonInput, {});
+          const response = await callAuthorAgent(params);
+          return JSON.stringify(response);
+        }
+      });
+
+      const hitlTool = new DynamicTool({
+        name: 'hitl_agent_submit',
+        description: 'Submit HTML to HITL agent and transition instance to wait state when needed.',
+        func: async (jsonInput) => {
+          const params = safeJsonParse(jsonInput, {});
+          const result = await submitHitlAndHandle({
+            instanceId: params.instance_id,
+            username: params.username,
+            html: params.html,
+            hitlConfig: params.hitlConfig,
+            loopIndex: params.loopIndex || 0,
+            traceId: params.trace_id,
+            abortOnFail: params.abortOnFail !== false
+          });
+          return JSON.stringify(result);
+        }
+      });
+
+      const sendTool = new DynamicTool({
+        name: 'send_agent_dispatch',
+        description: 'Call send-agent to deliver HTML email to recipients.',
+        func: async (jsonInput) => {
+          const params = safeJsonParse(jsonInput, {});
+          const result = await callSendAgent(params);
+          return JSON.stringify(result);
+        }
+      });
+
+      const authorHitlChain = RunnableSequence.from([
+        new RunnableLambda({
+          name: 'author_step',
+          func: async (input) => {
+            const authorArgs = {
+              instance_id: input.instance_id,
+              username: input.username,
+              instructions: input.instructions,
+              base_html: input.base_html,
+              subject: input.subject,
+              trace_id: input.trace_id
+            };
+            const authorResult = await invokeTool(authorTool, authorArgs);
+            return { ...input, authorResult };
+          }
+        }),
+        new RunnableLambda({
+          name: 'hitl_step',
+          func: async (input) => {
+            const hitlArgs = {
+              instance_id: input.instance_id,
+              username: input.username,
+              html: input.authorResult?.html,
+              hitlConfig: input.hitlConfig,
+              loopIndex: input.loopIndex || 0,
+              trace_id: input.trace_id,
+              abortOnFail: input.abortOnFail !== false
+            };
+            const hitlResult = await invokeTool(hitlTool, hitlArgs);
+            return { ...input, hitlResult };
+          }
+        })
+      ]);
+
+      const sendChain = RunnableSequence.from([
+        new RunnableLambda({
+          name: 'send_step',
+          func: async (input) => {
+            const sendArgs = {
+              instance_id: input.instance_id,
+              username: input.username,
+              html: input.html,
+              subject: input.subject,
+              sender_email: input.sender_email,
+              sender_name: input.sender_name,
+              to: input.to,
+              cc: input.cc,
+              bcc: input.bcc,
+              trace_id: input.trace_id
+            };
+            const sendResult = await invokeTool(sendTool, sendArgs);
+            return { ...input, sendResult };
+          }
+        })
+      ]);
+
+      return {
+        usingLangChain: true,
+        authorHitlChain,
+        sendChain
+      };
+    } catch (error) {
+      console.warn('[compose] LangChain unavailable, falling back to direct orchestration:', error && error.message ? error.message : error);
+      return {
+        usingLangChain: false,
+        authorHitlChain: {
+          invoke: async (input) => {
+            const authorResult = await callAuthorAgent({
+              instance_id: input.instance_id,
+              username: input.username,
+              instructions: input.instructions,
+              base_html: input.base_html,
+              subject: input.subject,
+              trace_id: input.trace_id
+            });
+            const hitlResult = await submitHitlAndHandle({
+              instanceId: input.instance_id,
+              username: input.username,
+              html: authorResult.html,
+              hitlConfig: input.hitlConfig,
+              loopIndex: input.loopIndex || 0,
+              traceId: input.trace_id,
+              abortOnFail: input.abortOnFail !== false
+            });
+            return { ...input, authorResult, hitlResult };
+          }
+        },
+        sendChain: {
+          invoke: async (input) => {
+            const sendResult = await callSendAgent({
+              instance_id: input.instance_id,
+              username: input.username,
+              html: input.html,
+              subject: input.subject,
+              sender_email: input.sender_email,
+              sender_name: input.sender_name,
+              to: input.to,
+              cc: input.cc,
+              bcc: input.bcc,
+              trace_id: input.trace_id
+            });
+            return { ...input, sendResult };
+          }
+        }
+      };
+    }
+  })();
+  return langChainContextPromise;
+}
+
 function abortInstance({ instanceId, username, traceId, note }) {
   updateMeta(instanceId, {
     status: 'abort',
@@ -279,10 +454,11 @@ async function handleHitlCallback(req, res) {
     };
 
     if (action === 'approve') {
-      // Send using existing email.html
+      // Send using existing email.html via LangChain send tool.
       const html = readLatestEmailHtml(instance_id);
       try {
-        await callSendAgent({
+        const { sendChain } = await getLangChainContext();
+        await sendChain.invoke({
           instance_id,
           username: user,
           html,
@@ -330,25 +506,21 @@ async function handleHitlCallback(req, res) {
           username: user,
           trace_id: traceId
         });
-        const authorResp = await callAuthorAgent({
+        const cfg = loadInstanceConfig(instance_id) || {};
+        const hitlCfg = cfg['human-in-the-loop'] || cfg['hitl'] || cfg['HITL'] || {};
+        const { authorHitlChain } = await getLangChainContext();
+        const chainResult = await authorHitlChain.invoke({
           instance_id,
           username: user,
           instructions: newInstr,
           base_html: baseHtml,
           subject: merged.subject,
-          trace_id: traceId
-        });
-        const cfg = loadInstanceConfig(instance_id) || {};
-        const hitlCfg = cfg['human-in-the-loop'] || cfg['hitl'] || cfg['HITL'] || {};
-        const hitlResult = await submitHitlAndHandle({
-          instanceId: instance_id,
-          username: user,
-          html: authorResp.html,
+          trace_id: traceId,
           hitlConfig: hitlCfg,
           loopIndex: nextGen - 1,
-          traceId,
           abortOnFail: false
         });
+        const hitlResult = chainResult ? (chainResult.hitlResult || chainResult.hitlResp || {}) : {};
         if (!hitlResult.accepted) {
           const detail = hitlResult.error || hitlResult.hitlInfo || hitlResult.hitlStatus;
           await abortInstance({
@@ -465,27 +637,22 @@ async function handleComposeSend(req, res) {
       trace_id: traceId
     });
 
-    let authorResp = await callAuthorAgent({
+    const cfg = loadInstanceConfig(instance_id) || {};
+    const hitlCfg = cfg['human-in-the-loop'] || cfg['hitl'] || cfg['HITL'] || {};
+    const loopIdx = (genMeta && genMeta.gen_count ? genMeta.gen_count - 1 : 0);
+    const { authorHitlChain } = await getLangChainContext();
+    const chainResult = await authorHitlChain.invoke({
       instance_id,
       username,
       instructions,
       base_html: baseHtmlPayload,
       subject: merged.subject,
-      trace_id: traceId
-    });
-
-    // Submit to HITL
-    const cfg = loadInstanceConfig(instance_id) || {};
-    const hitlCfg = cfg['human-in-the-loop'] || cfg['hitl'] || cfg['HITL'] || {};
-    const loopIdx = (genMeta && genMeta.gen_count ? genMeta.gen_count - 1 : 0);
-    const hitlResult = await submitHitlAndHandle({
-      instanceId: instance_id,
-      username,
-      html: authorResp.html,
+      trace_id: traceId,
       hitlConfig: hitlCfg,
-      loopIndex: loopIdx,
-      traceId
+      loopIndex: loopIdx
     });
+    const authorResp = chainResult ? (chainResult.authorResult || chainResult.authorResp || {}) : {};
+    const hitlResult = chainResult ? (chainResult.hitlResult || chainResult.hitlResp || {}) : {};
     if (!hitlResult.accepted) {
       return {
         error: 'hitl_submit_failed',

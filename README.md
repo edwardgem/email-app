@@ -5,12 +5,12 @@ A three-service app of the email workflow:
 - **send-agent**: sends approved HTML emails.
 - **compose**: orchestrates author → send (HITL can be slotted later).
 
-**LangChain** translates user specs into HTML inside the author-agent; compose as a LangChain workflow orchestrator glues that output to send-agent and loops in the **HITL agent** for human oversight without re-implementing LLM logic elsewhere.
+**LangChain** now orchestrates the compose workflow (author-agent tool → HITL tool → send-agent tool). The author-agent continues to run its existing prompt/LLM logic, but compose exposes each service as a LangChain tool so we can trace/run the entire pipeline (with a transparent fallback to the legacy imperative flow) while keeping the **HITL agent** integration untouched.
 
 ## Structure
 - `author-agent/` – generation service (uses `prompt.txt`, supports `base_html` regen path).
 - `send-agent/` – send service (mailer stub).
-- `compose/` – AMP-facing orchestrator; merges config defaults, calls author/send.
+- `compose/` – AMP-facing orchestrator; merges config defaults, calls author/send, and loads LangChain chains that wrap both calls plus the HITL workflow. Run `npm install` inside `compose/` to pull the LangChain dependency.
 - `shared/` – common utilities (paths, logging, traces).
 - `infrastructure/` – deployment assets (pm2 config lives at repo root).
 - `tests/` – integration/unit tests (to be added).
@@ -28,6 +28,7 @@ A three-service app of the email workflow:
 - LLM config (env): supports ollama or OpenAI via `LLM_PROVIDER`, `LLM_MODEL`, `LLM_ENDPOINT`, `LLM_OPTIONS`, `OPENAI_API_KEY`.
 - Mail config (env): `MAIL_PROVIDER` (resend/gmail) plus provider-specific keys.
 - Env sourcing: set shared env in `ecosystem.config.js` (pm2) or service-level env; per-instance `.env` files are optional and only for instance-specific overrides.
+- Compose lazily imports `@langchain/core` to build tools for author-agent, the HITL agent, and send-agent. If the package is missing, it logs a warning and falls back to the legacy imperative flow so AMP / HITL / log-agent integrations continue to work.
 
 ## Running with pm2
 ```
@@ -43,7 +44,7 @@ INSTANCE_ROOT=/Users/edwardc/Projects/agents LOG_API_URL=http://localhost:4000/a
   - behavior: validates recipients/subject/html, reads per-instance mail env overrides, sends via provider (resend/gmail), writes `artifacts/email.html`.
 - `compose POST /compose/send`
   - body: `{ instance_id?, username, instructions, subject?, to?, cc?, bcc?, sender_email?, sender_name?, regen_base_html?, trace_id? }`
-  - behavior: generate instance_id if missing; merge subject/recipients from request over `config.json`; require subject and at least one recipient after merge; call author then email; return combined result.
+  - behavior: generate instance_id if missing; merge subject/recipients from request over `config.json`; require subject and at least one recipient after merge; LangChain chain calls author tool then HITL tool (with fallback when LangChain is unavailable); return combined result.
 
 ## Notes
 - All services have `/health`.
