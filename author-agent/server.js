@@ -76,7 +76,7 @@ function buildPrompt({ instructions, baseHtml, promptText }) {
   const hasInstructions = instructions && instructions.trim();
   const keyBlock = hasInstructions ? `\n\n[KEY INSTRUCTIONS]\n${instructions.trim()}\n` : '';
   const instructionReminder = hasInstructions
-    ? '\n\nWhen producing JSON, explicitly reference the [KEY INSTRUCTIONS] in reasoning.summary and reasoning.key_instructions (quote or closely paraphrase them) so it is obvious they were applied.'
+    ? '\n\nWhen producing JSON, mention the instructions you considered while generating the email and keep reasoning.key_instructions to a concise summary of how you applied them (never copy the literal "[KEY INSTRUCTIONS]" label or quote the raw text verbatim).'
     : '\n\nIf there are no [KEY INSTRUCTIONS], rely solely on the base prompt.';
   const enforcement = '\nEnsure the final HTML answer reflects every applicable instruction.';
   if (!baseHtml) {

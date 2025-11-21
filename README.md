@@ -48,5 +48,4 @@ INSTANCE_ROOT=/Users/edwardc/Projects/agents LOG_API_URL=http://localhost:4000/a
 
 ## Notes
 - All services have `/health`.
-- LLM/mailer are stubbed; replace with real adapters as needed.
 - Compose must be called with `username`; it propagates to downstream logs.
