@@ -21,6 +21,7 @@ const SERVICE = 'compose';
 const AUTHOR_URL = process.env.AUTHOR_AGENT_URL || 'http://127.0.0.1:4101';
 const SEND_URL = process.env.SEND_AGENT_URL || process.env.EMAIL_AGENT_URL || 'http://127.0.0.1:4102';
 const HITL_URL = process.env.HITL_API_URL || 'http://127.0.0.1:3001/api/hitl-agent';
+const AMP_BACKEND_URL = process.env.AMP_BACKEND_URL || 'http://127.0.0.1:5000';
 
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -98,9 +99,35 @@ async function callSendAgent(body) {
   return res.json();
 }
 
-async function callHitlAgent({ instance_id, html, hitlConfig, loopIndex = 0, trace_id }) {
+async function resolveOrgIdForUsername(username) {
+  const normalized = (username || '').trim();
+  if (!normalized) return null;
+  const url = `${AMP_BACKEND_URL.replace(/\/$/, '')}/api/internal/users/resolve`;
+  const headers = { 'Content-Type': 'application/json' };
+  const internalSecret = process.env.AMP_INTERNAL_SECRET || process.env.AMP_TRIGGER_SECRET;
+  if (internalSecret) headers['X-AMP-Internal-Key'] = internalSecret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: normalized })
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    return data && data.org_id ? String(data.org_id) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function callHitlAgent({ instance_id, username, html, hitlConfig, loopIndex = 0, trace_id }) {
+  const orgId = await resolveOrgIdForUsername(username);
+  if (!orgId) {
+    return { status: 400, body: { status: 'error', error: 'missing_org_id' } };
+  }
   const payload = {
     caller_id: instance_id,
+    org_id: orgId,
     html,
     hitl: hitlConfig || {},
     loop: loopIndex + 1
