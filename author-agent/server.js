@@ -209,17 +209,17 @@ async function handleGenerate(req, res) {
   try { payload = await parseJsonBody(req); }
   catch (_) { return send(res, 400, { error: 'invalid_json' }); }
 
-  const { instance_id, username, instructions = '', base_html = '', subject = '', trace_id } = payload || {};
+  const { instance_id, username, instructions = '', base_html = '', subject = '', trace_id, org_id: orgId } = payload || {};
   if (!validateInstanceId(instance_id)) return send(res, 400, { error: 'instance_id_required' });
   if (!username) return send(res, 400, { error: 'username_required' });
 
   // Load per-instance config and env overrides.
-  const instanceConfig = loadInstanceConfig(instance_id);
-  const instanceEnv = loadInstanceEnv(instance_id);
+  const instanceConfig = loadInstanceConfig(instance_id, orgId);
+  const instanceEnv = loadInstanceEnv(instance_id, orgId);
   const llmCfg = getLLMConfigFromEnv(instanceEnv);
   const modelName = llmCfg.model || 'stub-model';
 
-  const paths = getInstancePaths(instance_id);
+  const paths = getInstancePaths(instance_id, orgId);
   const promptPath = resolvePromptPath(paths.root, instanceConfig, instanceEnv);
   const promptText = readPromptText(promptPath);
 
@@ -246,11 +246,11 @@ async function handleGenerate(req, res) {
     reasoning = { summary: `LLM error (${err && err.message ? err.message : err}); used stub fallback.`, used_existing_html: promptInfo.usedExistingHtml };
   }
 
-  const { artifactsDir, draftHtml } = getInstancePaths(instance_id);
+  const { artifactsDir, draftHtml } = getInstancePaths(instance_id, orgId);
   ensureDir(artifactsDir);
   rotateEmailFiles(draftHtml);
   fs.writeFileSync(draftHtml, html, 'utf8');
-  appendLocalLog(instance_id, 'author-agent', 'Generated email HTML and saved to artifacts/email.html');
+  appendLocalLog(instance_id, 'author-agent', 'Generated email HTML and saved to artifacts/email.html', orgId);
 
   const traceEntry = {
     call_time: new Date().toISOString(),
@@ -260,7 +260,7 @@ async function handleGenerate(req, res) {
     answer: html,
     trace_id: trace_id || null
   };
-  appendLlmTrace(instance_id, traceEntry);
+  appendLlmTrace(instance_id, traceEntry, orgId);
 
   await logEvent({
     service: SERVICE,

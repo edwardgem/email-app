@@ -169,7 +169,8 @@ async function handleSend(req, res) {
     to,
     cc,
     bcc,
-    trace_id
+    trace_id,
+    org_id: orgId
   } = payload || {};
 
   if (!validateInstanceId(instance_id)) return sendJson(res, 400, { error: 'instance_id_required' });
@@ -180,7 +181,7 @@ async function handleSend(req, res) {
   if (!recipients) return sendJson(res, 400, { error: 'recipients_required' });
 
   // Load per-instance mail configuration overrides.
-  const instanceEnv = loadInstanceEnv(instance_id);
+  const instanceEnv = loadInstanceEnv(instance_id, orgId);
   const mailCfg = getMailConfigFromEnv(instanceEnv);
 
   await logEvent({
@@ -193,10 +194,10 @@ async function handleSend(req, res) {
     trace_id
   });
 
-  const { artifactsDir, draftHtml } = getInstancePaths(instance_id);
+  const { artifactsDir, draftHtml } = getInstancePaths(instance_id, orgId);
   ensureDir(artifactsDir);
   fs.writeFileSync(draftHtml, html, 'utf8');
-  appendLocalLog(instance_id, 'send-agent', 'Sending email via provider');
+  appendLocalLog(instance_id, 'send-agent', 'Sending email via provider', orgId);
 
   let sendResult;
   try {

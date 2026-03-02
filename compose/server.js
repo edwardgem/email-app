@@ -120,8 +120,8 @@ async function resolveOrgIdForUsername(username) {
   }
 }
 
-async function callHitlAgent({ instance_id, username, html, hitlConfig, loopIndex = 0, trace_id }) {
-  const orgId = await resolveOrgIdForUsername(username);
+async function callHitlAgent({ instance_id, username, html, hitlConfig, loopIndex = 0, trace_id, org_id }) {
+  const orgId = org_id || await resolveOrgIdForUsername(username);
   if (!orgId) {
     return { status: 400, body: { status: 'error', error: 'missing_org_id' } };
   }
@@ -132,7 +132,7 @@ async function callHitlAgent({ instance_id, username, html, hitlConfig, loopInde
     hitl: hitlConfig || {},
     loop: loopIndex + 1
   };
-  appendLocalLog(instance_id, 'compose', `HITL submit -> ${HITL_URL}`);
+  appendLocalLog(instance_id, 'compose', `HITL submit -> ${HITL_URL}`, orgId);
   const res = await fetch(HITL_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -150,7 +150,8 @@ async function submitHitlAndHandle({
   hitlConfig,
   loopIndex = 0,
   traceId,
-  abortOnFail = true
+  abortOnFail = true,
+  orgId
 }) {
   const hitlResp = await callHitlAgent({
     instance_id: instanceId,
@@ -158,7 +159,8 @@ async function submitHitlAndHandle({
     html,
     hitlConfig,
     loopIndex,
-    trace_id: traceId
+    trace_id: traceId,
+    org_id: orgId
   });
   const statusCode = hitlResp.status;
   const hitlError = hitlResp.body && hitlResp.body.error ? hitlResp.body.error : null;
@@ -169,7 +171,7 @@ async function submitHitlAndHandle({
   if (!hitlAccepted && abortOnFail) {
     const reason = `HITL submission rejected: status=${statusCode}${hitlError ? ` error=${hitlError}` : ''}${hitlStatus ? ` status=${hitlStatus}` : ''}${hitlInfo ? ` info=${hitlInfo}` : ''}`;
     try {
-      appendLocalLog(instanceId, 'compose', reason);
+      appendLocalLog(instanceId, 'compose', reason, orgId);
     } catch (_) { /* ignore */ }
     await logEvent({
       service: SERVICE,
@@ -184,7 +186,8 @@ async function submitHitlAndHandle({
       instanceId,
       username,
       traceId,
-      note: `HITL submission failed: ${statusCode}${hitlError ? ` error=${hitlError}` : ''}${hitlStatus ? ` status=${hitlStatus}` : ''}${hitlInfo ? ` info=${hitlInfo}` : ''}`
+      note: `HITL submission failed: ${statusCode}${hitlError ? ` error=${hitlError}` : ''}${hitlStatus ? ` status=${hitlStatus}` : ''}${hitlInfo ? ` info=${hitlInfo}` : ''}`,
+      orgId
     });
   }
 
@@ -199,12 +202,12 @@ async function submitHitlAndHandle({
       trace_id: traceId
     });
     try {
-      appendLocalLog(instanceId, 'compose', `HITL submission accepted (${statusCode})`);
+      appendLocalLog(instanceId, 'compose', `HITL submission accepted (${statusCode})`, orgId);
     } catch (_) { /* ignore */ }
     // Transition to wait state while HITL is pending
     try {
-      updateMeta(instanceId, { status: 'wait' });
-      appendLocalLog(instanceId, 'compose', 'state - wait');
+      updateMeta(instanceId, { status: 'wait' }, orgId);
+      appendLocalLog(instanceId, 'compose', 'state - wait', orgId);
       await logEvent({
         service: SERVICE,
         level: 'info',
@@ -279,7 +282,8 @@ async function getLangChainContext() {
             hitlConfig: params.hitlConfig,
             loopIndex: params.loopIndex || 0,
             traceId: params.trace_id,
-            abortOnFail: params.abortOnFail !== false
+            abortOnFail: params.abortOnFail !== false,
+            orgId: params.org_id
           });
           return JSON.stringify(result);
         }
@@ -305,7 +309,8 @@ async function getLangChainContext() {
               instructions: input.instructions,
               base_html: input.base_html,
               subject: input.subject,
-              trace_id: input.trace_id
+              trace_id: input.trace_id,
+              org_id: input.org_id
             };
             const authorResult = await invokeTool(authorTool, authorArgs);
             return { ...input, authorResult };
@@ -321,7 +326,8 @@ async function getLangChainContext() {
               hitlConfig: input.hitlConfig,
               loopIndex: input.loopIndex || 0,
               trace_id: input.trace_id,
-              abortOnFail: input.abortOnFail !== false
+              abortOnFail: input.abortOnFail !== false,
+              org_id: input.org_id
             };
             const hitlResult = await invokeTool(hitlTool, hitlArgs);
             return { ...input, hitlResult };
@@ -343,7 +349,8 @@ async function getLangChainContext() {
               to: input.to,
               cc: input.cc,
               bcc: input.bcc,
-              trace_id: input.trace_id
+              trace_id: input.trace_id,
+              org_id: input.org_id
             };
             const sendResult = await invokeTool(sendTool, sendArgs);
             return { ...input, sendResult };
@@ -368,7 +375,8 @@ async function getLangChainContext() {
               instructions: input.instructions,
               base_html: input.base_html,
               subject: input.subject,
-              trace_id: input.trace_id
+              trace_id: input.trace_id,
+              org_id: input.org_id
             });
             const hitlResult = await submitHitlAndHandle({
               instanceId: input.instance_id,
@@ -377,7 +385,8 @@ async function getLangChainContext() {
               hitlConfig: input.hitlConfig,
               loopIndex: input.loopIndex || 0,
               traceId: input.trace_id,
-              abortOnFail: input.abortOnFail !== false
+              abortOnFail: input.abortOnFail !== false,
+              orgId: input.org_id
             });
             return { ...input, authorResult, hitlResult };
           }
@@ -394,7 +403,8 @@ async function getLangChainContext() {
               to: input.to,
               cc: input.cc,
               bcc: input.bcc,
-              trace_id: input.trace_id
+              trace_id: input.trace_id,
+              org_id: input.org_id
             });
             return { ...input, sendResult };
           }
@@ -497,7 +507,8 @@ async function handleHitlCallback(req, res) {
           to: merged.to,
           cc: merged.cc,
           bcc: merged.bcc,
-          trace_id: traceId
+          trace_id: traceId,
+          org_id: orgId
         });
         finishAs('finished', 'hitl approve');
         return;
@@ -547,7 +558,8 @@ async function handleHitlCallback(req, res) {
           trace_id: traceId,
           hitlConfig: hitlCfg,
           loopIndex: nextGen - 1,
-          abortOnFail: false
+          abortOnFail: false,
+          org_id: orgId
         });
         const hitlResult = chainResult ? (chainResult.hitlResult || chainResult.hitlResp || {}) : {};
         if (!hitlResult.accepted) {
@@ -681,7 +693,8 @@ async function handleComposeSend(req, res) {
       subject: merged.subject,
       trace_id: traceId,
       hitlConfig: hitlCfg,
-      loopIndex: loopIdx
+      loopIndex: loopIdx,
+      org_id: orgId
     });
     const authorResp = chainResult ? (chainResult.authorResult || chainResult.authorResp || {}) : {};
     const hitlResult = chainResult ? (chainResult.hitlResult || chainResult.hitlResp || {}) : {};
