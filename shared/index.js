@@ -41,9 +41,13 @@ function getInstanceRoot() {
 }
 
 // Build common paths for an instance.
-function getInstancePaths(instanceId) {
+// When orgId is provided, paths are scoped under INSTANCE_ROOT/<orgId>/email-app/<instanceId>.
+function getInstancePaths(instanceId, orgId) {
   if (!instanceId) throw new Error('instance_id is required');
-  const root = path.join(getInstanceRoot(), 'email-app', instanceId);
+  const base = getInstanceRoot();
+  const root = orgId
+    ? path.join(base, orgId, 'email-app', instanceId)
+    : path.join(base, 'email-app', instanceId);
   return {
     root,
     meta: path.join(root, 'meta.json'),
@@ -60,9 +64,9 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-function appendLocalLog(instanceId, service, message) {
+function appendLocalLog(instanceId, service, message, orgId) {
   try {
-    const { logsDir } = getInstancePaths(instanceId);
+    const { logsDir } = getInstancePaths(instanceId, orgId);
     ensureDir(logsDir);
     const file = path.join(logsDir, `${service}.log`);
     const line = `[${new Date().toISOString()}] ${message}\n`;
@@ -91,8 +95,8 @@ function parseEnvFile(filePath) {
   }
 }
 
-function loadInstanceEnv(instanceId) {
-  const { root } = getInstancePaths(instanceId);
+function loadInstanceEnv(instanceId, orgId) {
+  const { root } = getInstancePaths(instanceId, orgId);
   const envPath = path.join(root, '.env');
   return parseEnvFile(envPath);
 }
@@ -112,13 +116,13 @@ function writeJsonSafe(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
 }
 
-function loadInstanceConfig(instanceId) {
-  const { config } = getInstancePaths(instanceId);
+function loadInstanceConfig(instanceId, orgId) {
+  const { config } = getInstancePaths(instanceId, orgId);
   return readJsonSafe(config) || {};
 }
 
-function appendLlmTrace(instanceId, entry) {
-  const { traces } = getInstancePaths(instanceId);
+function appendLlmTrace(instanceId, entry, orgId) {
+  const { traces } = getInstancePaths(instanceId, orgId);
   ensureDir(path.dirname(traces));
   let records = [];
   try {
@@ -161,8 +165,8 @@ function validateInstanceId(value) {
   return typeof value === 'string' && !!value.trim();
 }
 
-function updateMeta(instanceId, updater) {
-  const { meta } = getInstancePaths(instanceId);
+function updateMeta(instanceId, updater, orgId) {
+  const { meta } = getInstancePaths(instanceId, orgId);
   const existing = readJsonSafe(meta) || {};
   const next = typeof updater === 'function' ? updater({ ...existing }) : { ...existing, ...(updater || {}) };
   writeJsonSafe(meta, next);

@@ -40,8 +40,8 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function mergeConfig(instanceId, payload) {
-  const cfg = loadInstanceConfig(instanceId);
+function mergeConfig(instanceId, payload, orgId) {
+  const cfg = loadInstanceConfig(instanceId, orgId);
   const subject = payload.subject || cfg.subject || cfg.EMAIL_SUBJECT || null;
   const to = payload.to || cfg.to || [];
   const cc = payload.cc || cfg.cc || [];
@@ -51,7 +51,7 @@ function mergeConfig(instanceId, payload) {
   return { subject, to, cc, bcc, sender_email, sender_name };
 }
 
-function markInstanceActive(instanceId, username) {
+function markInstanceActive(instanceId, username, orgId) {
   updateMeta(instanceId, (prev) => {
     const next = { ...(prev || {}), status: 'active' };
     if (!next.started_at) {
@@ -59,9 +59,9 @@ function markInstanceActive(instanceId, username) {
     }
     if (username && !next.owner) next.owner = username;
     return next;
-  });
+  }, orgId);
   try {
-    appendLocalLog(instanceId, 'compose', 'state - active');
+    appendLocalLog(instanceId, 'compose', 'state - active', orgId);
   } catch (_) { /* ignore */ }
 }
 
@@ -220,8 +220,8 @@ async function submitHitlAndHandle({
   return { accepted: hitlAccepted, status: statusCode, error: hitlError, hitlStatus, hitlInfo };
 }
 
-function readLatestEmailHtml(instanceId) {
-  const { draftHtml } = getInstancePaths(instanceId);
+function readLatestEmailHtml(instanceId, orgId) {
+  const { draftHtml } = getInstancePaths(instanceId, orgId);
   try {
     if (fs.existsSync(draftHtml)) {
       return fs.readFileSync(draftHtml, 'utf8');
@@ -405,14 +405,14 @@ async function getLangChainContext() {
   return langChainContextPromise;
 }
 
-function abortInstance({ instanceId, username, traceId, note }) {
+function abortInstance({ instanceId, username, traceId, note, orgId }) {
   updateMeta(instanceId, {
     status: 'abort',
     finished_at: new Date().toISOString().replace('T', ' ').slice(0, 19)
-  });
+  }, orgId);
   try {
-    appendLocalLog(instanceId, 'compose', 'state - abort');
-    if (note) appendLocalLog(instanceId, 'compose', note);
+    appendLocalLog(instanceId, 'compose', 'state - abort', orgId);
+    if (note) appendLocalLog(instanceId, 'compose', note, orgId);
   } catch (_) { /* ignore */ }
   return logEvent({
     service: SERVICE,
@@ -428,12 +428,13 @@ function abortInstance({ instanceId, username, traceId, note }) {
 async function handleAbort(req, res) {
   let body = {};
   try { body = await parseJsonBody(req); } catch (_) { return sendJson(res, 400, { error: 'invalid_json' }); }
-  const { instance_id, username, trace_id } = body || {};
+  const { instance_id, username, trace_id, org_id: payloadOrgId } = body || {};
   if (!validateInstanceId(instance_id)) return sendJson(res, 400, { error: 'instance_id_required' });
   if (!username) return sendJson(res, 400, { error: 'username_required' });
   const traceId = trace_id || crypto.randomBytes(6).toString('hex');
+  const orgId = payloadOrgId || await resolveOrgIdForUsername(username);
 
-  await abortInstance({ instanceId: instance_id, username, traceId });
+  await abortInstance({ instanceId: instance_id, username, traceId, orgId });
 
   return sendJson(res, 200, { ok: true, instance_id, trace_id: traceId });
 }
@@ -441,15 +442,16 @@ async function handleAbort(req, res) {
 async function handleHitlCallback(req, res) {
   let body = {};
   try { body = await parseJsonBody(req); } catch (_) { return sendJson(res, 400, { error: 'invalid_json' }); }
-  const { instance_id, result, response, information, instructions, username, trace_id, async: isAsync } = body || {};
+  const { instance_id, result, response, information, instructions, username, trace_id, org_id: payloadOrgId, async: isAsync } = body || {};
   const action = (response || result || '').toString().toLowerCase();
   if (!validateInstanceId(instance_id)) return sendJson(res, 400, { error: 'instance_id_required' });
   const user = (username || '').trim() || 'unknown';
   const traceId = trace_id || crypto.randomBytes(6).toString('hex');
+  const orgId = payloadOrgId || await resolveOrgIdForUsername(user);
 
   const handler = async () => {
     const infoText = information ? ` info='${String(information)}'` : '';
-    appendLocalLog(instance_id, 'compose', `hitl-callback: ${action || 'unknown'}${infoText}`);
+    appendLocalLog(instance_id, 'compose', `hitl-callback: ${action || 'unknown'}${infoText}`, orgId);
     await logEvent({
       service: SERVICE,
       level: 'info',
@@ -461,14 +463,14 @@ async function handleHitlCallback(req, res) {
     });
 
     // Load config and recipients
-    const merged = mergeConfig(instance_id, {});
+    const merged = mergeConfig(instance_id, {}, orgId);
 
     const finishAs = (status, logMsg) => {
       updateMeta(instance_id, {
         status,
         finished_at: new Date().toISOString().replace('T', ' ').slice(0, 19)
-      });
-      appendLocalLog(instance_id, 'compose', `state - ${status}`);
+      }, orgId);
+      appendLocalLog(instance_id, 'compose', `state - ${status}`, orgId);
       logEvent({
         service: SERVICE,
         level: status === 'finished' ? 'info' : 'warn',
@@ -482,7 +484,7 @@ async function handleHitlCallback(req, res) {
 
     if (action === 'approve') {
       // Send using existing email.html via LangChain send tool.
-      const html = readLatestEmailHtml(instance_id);
+      const html = readLatestEmailHtml(instance_id, orgId);
       try {
         const { sendChain } = await getLangChainContext();
         await sendChain.invoke({
@@ -521,8 +523,8 @@ async function handleHitlCallback(req, res) {
         nextGen = next.gen_count;
         next.status = 'active';
         return next;
-      });
-      const baseHtml = readLatestEmailHtml(instance_id);
+      }, orgId);
+      const baseHtml = readLatestEmailHtml(instance_id, orgId);
       try {
         await logEvent({
           service: SERVICE,
@@ -533,7 +535,7 @@ async function handleHitlCallback(req, res) {
           username: user,
           trace_id: traceId
         });
-        const cfg = loadInstanceConfig(instance_id) || {};
+        const cfg = loadInstanceConfig(instance_id, orgId) || {};
         const hitlCfg = cfg['human-in-the-loop'] || cfg['hitl'] || cfg['HITL'] || {};
         const { authorHitlChain } = await getLangChainContext();
         const chainResult = await authorHitlChain.invoke({
@@ -554,7 +556,8 @@ async function handleHitlCallback(req, res) {
             instanceId: instance_id,
             username: user,
             traceId,
-            note: `HITL resubmit failed: ${hitlResult.status}${detail ? ` detail=${detail}` : ''}`
+            note: `HITL resubmit failed: ${hitlResult.status}${detail ? ` detail=${detail}` : ''}`,
+            orgId
           });
           throw new Error(`HITL resubmit failed ${hitlResult.status}${detail ? ` detail=${detail}` : ''}`);
         }
@@ -571,7 +574,7 @@ async function handleHitlCallback(req, res) {
   if (isAsync === true) {
     setImmediate(() => {
       handler().catch((e) => {
-        try { appendLocalLog(instance_id, 'compose', `hitl-callback async error: ${e && e.message ? e.message : e}`); } catch (_) {}
+        try { appendLocalLog(instance_id, 'compose', `hitl-callback async error: ${e && e.message ? e.message : e}`, orgId); } catch (_) {}
       });
     });
     return sendJson(res, 202, { status: 'accepted', instance_id, trace_id: traceId });
@@ -596,29 +599,31 @@ async function handleComposeSend(req, res) {
     username,
     instructions,
     regen_base_html: initialBaseHtml = '',
-    trace_id
+    trace_id,
+    org_id: payloadOrgId
   } = payload || {};
   if (!username) return sendJson(res, 400, { error: 'username_required' });
   if (!instructions && !initialBaseHtml) return sendJson(res, 400, { error: 'instructions_required' });
 
   if (!validateInstanceId(instance_id)) instance_id = generateInstanceId();
   const traceId = trace_id || crypto.randomBytes(6).toString('hex');
+  const orgId = payloadOrgId || await resolveOrgIdForUsername(username);
 
-  const paths = getInstancePaths(instance_id);
+  const paths = getInstancePaths(instance_id, orgId);
   ensureDir(paths.root);
 
   let baseHtmlPayload = initialBaseHtml;
   if (!baseHtmlPayload) {
-    const latest = readLatestEmailHtml(instance_id);
+    const latest = readLatestEmailHtml(instance_id, orgId);
     if (latest) {
       baseHtmlPayload = latest;
       try {
-        appendLocalLog(instance_id, 'compose', 'auto-attached latest email.html for regeneration');
+        appendLocalLog(instance_id, 'compose', 'auto-attached latest email.html for regeneration', orgId);
       } catch (_) { /* ignore */ }
     }
   }
 
-  const merged = mergeConfig(instance_id, payload || {});
+  const merged = mergeConfig(instance_id, payload || {}, orgId);
   const recipients = requireRecipients(merged.to, merged.cc, merged.bcc);
   if (!merged.subject) return sendJson(res, 400, { error: 'subject_missing_after_merge' });
   if (!recipients) return sendJson(res, 400, { error: 'recipients_missing_after_merge' });
@@ -635,7 +640,7 @@ async function handleComposeSend(req, res) {
   });
 
   // Mark meta as active and stamp started_at
-  markInstanceActive(instance_id, username);
+  markInstanceActive(instance_id, username, orgId);
   await logEvent({
     service: SERVICE,
     level: 'info',
@@ -651,7 +656,7 @@ async function handleComposeSend(req, res) {
       const next = { ...(prev || {}) };
       next.gen_count = parseInt(next.gen_count || 0, 10) + 1;
       return next;
-    });
+    }, orgId);
 
     // Log before invoking the LLM so the record appears immediately
     await logEvent({
@@ -664,7 +669,7 @@ async function handleComposeSend(req, res) {
       trace_id: traceId
     });
 
-    const cfg = loadInstanceConfig(instance_id) || {};
+    const cfg = loadInstanceConfig(instance_id, orgId) || {};
     const hitlCfg = cfg['human-in-the-loop'] || cfg['hitl'] || cfg['HITL'] || {};
     const loopIdx = (genMeta && genMeta.gen_count ? genMeta.gen_count - 1 : 0);
     const { authorHitlChain } = await getLangChainContext();
