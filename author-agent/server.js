@@ -71,7 +71,8 @@ function buildPrompt({ instructions, baseHtml, promptText }) {
     '  },\n' +
     '  "answer": "<string>"\n' +
     '}\n' +
-    'Populate "answer" with the complete HTML email. Do not return any content outside of the JSON contract.';
+    'Populate "answer" with the complete HTML email. The answer MUST begin with "<html" and end with "</html>". ' +
+    'Do not wrap answer in markdown code fences. Do not return any content outside of the JSON contract.';
 
   const hasInstructions = instructions && instructions.trim();
   const keyBlock = hasInstructions ? `\n\n[KEY INSTRUCTIONS]\n${instructions.trim()}\n` : '';
@@ -193,14 +194,91 @@ function cleanHtmlOutput(raw) {
   return trimmed;
 }
 
-function parseLlmJson(raw) {
-  if (!raw || typeof raw !== 'string') return null;
+function stripCodeFence(text) {
+  const s = String(text || '').trim();
+  const m = s.match(/^```(?:json|html)?\s*([\s\S]*?)\s*```$/i);
+  return m ? m[1].trim() : s;
+}
+
+function extractJsonCandidate(raw) {
+  const text = stripCodeFence(raw);
+  // Direct JSON first.
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && parsed.answer) {
-      return parsed;
-    }
+    const obj = JSON.parse(text);
+    if (obj && typeof obj === 'object') return obj;
   } catch (_) {}
+
+  // Common case: assistant adds prose before/after JSON.
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first !== -1 && last !== -1 && last > first) {
+    const slice = text.slice(first, last + 1);
+    try {
+      const obj = JSON.parse(slice);
+      if (obj && typeof obj === 'object') return obj;
+    } catch (_) {}
+  }
+
+  // Try fenced JSON block anywhere in text.
+  const fenced = text.match(/```json\s*([\s\S]*?)\s*```/i) || text.match(/```\s*([\s\S]*?)\s*```/i);
+  if (fenced && fenced[1]) {
+    try {
+      const obj = JSON.parse(fenced[1].trim());
+      if (obj && typeof obj === 'object') return obj;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function isLikelyHtml(text) {
+  if (!text || typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  return t.startsWith('<!doctype html') || t.startsWith('<html');
+}
+
+function isLowQualityHtml(text) {
+  if (!text || typeof text !== 'string') return true;
+  const normalized = text.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (/^<html>\s*\.{2,}\s*<\/html>$/.test(normalized)) return true;
+  const plain = normalized.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!plain || plain === '...') return true;
+  // Guard against placeholder/empty shells.
+  if (plain.length < 80) return true;
+  return false;
+}
+
+function extractHtmlCandidate(raw) {
+  const text = String(raw || '');
+  const direct = cleanHtmlOutput(text);
+  if (isLikelyHtml(direct)) return direct;
+
+  const fencedHtml = text.match(/```html\s*([\s\S]*?)\s*```/i);
+  if (fencedHtml && fencedHtml[1]) {
+    const cand = cleanHtmlOutput(fencedHtml[1]);
+    if (isLikelyHtml(cand)) return cand;
+  }
+  return '';
+}
+
+function buildRetryPrompt(basePrompt, badHtml) {
+  const sample = String(badHtml || '').slice(0, 500);
+  return [
+    basePrompt,
+    '',
+    'RETRY INSTRUCTION (required):',
+    'Your previous answer was invalid/low-quality HTML.',
+    'Previous answer sample:',
+    sample || '(empty)',
+    'Now regenerate a complete production-ready email HTML.',
+    'Do not use placeholders like "...".',
+    'The answer must be a full HTML document with meaningful content.',
+    'Return JSON only per the schema.'
+  ].join('\n');
+}
+
+function parseLlmJson(raw) {
+  const parsed = extractJsonCandidate(raw);
+  if (parsed && typeof parsed === 'object' && parsed.answer) return parsed;
   return null;
 }
 
@@ -229,17 +307,33 @@ async function handleGenerate(req, res) {
   let modelUsed = modelName;
 
   try {
-    const llmResult = await generateHtmlWithLLM({ llmCfg, prompt: promptInfo.prompt });
-    const raw = llmResult.html || '';
-    const parsed = parseLlmJson(raw);
-    if (parsed) {
-      html = cleanHtmlOutput(parsed.answer || '');
-      reasoning = parsed.reasoning || {};
-    } else {
-      html = cleanHtmlOutput(raw);
-      reasoning = llmResult.reasoning || {};
+    let attemptPrompt = promptInfo.prompt;
+    let llmResult = null;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      llmResult = await generateHtmlWithLLM({ llmCfg, prompt: attemptPrompt });
+      const raw = llmResult.html || '';
+      const parsed = parseLlmJson(raw);
+      if (parsed) {
+        html = extractHtmlCandidate(parsed.answer || '') || extractHtmlCandidate(raw);
+        reasoning = parsed.reasoning || {};
+      } else {
+        html = extractHtmlCandidate(raw);
+        reasoning = llmResult.reasoning || {};
+      }
+      modelUsed = llmResult.model_used || modelName;
+      if (isLikelyHtml(html) && !isLowQualityHtml(html)) {
+        lastErr = null;
+        break;
+      }
+      lastErr = new Error('llm_output_invalid_or_low_quality_html');
+      if (attempt === 0) {
+        attemptPrompt = buildRetryPrompt(promptInfo.prompt, html || raw);
+      }
     }
-    modelUsed = llmResult.model_used || modelName;
+    if (lastErr) {
+      throw lastErr;
+    }
   } catch (err) {
     // Fallback to stub on error
     html = stubGenerateHtml({ instructions, baseHtml: base_html });
