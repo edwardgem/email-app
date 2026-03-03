@@ -142,10 +142,13 @@ async function logEvent({ service, level = 'info', event_type, message, instance
   const url = process.env.LOG_API_URL || 'http://localhost:4000/api/log';
   const ts = new Date().toISOString();
   const payload = { service, level, event_type, message, instance_id, username, trace_id, ts };
+  const headers = { 'content-type': 'application/json' };
+  const internalKey = process.env.AMP_INTERNAL_SECRET;
+  if (internalKey) headers['X-AMP-Internal-Key'] = internalKey;
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(payload)
     });
     if (!res.ok) {
