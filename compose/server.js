@@ -20,7 +20,7 @@ const PORT = Number(process.env.PORT || 4100);
 const SERVICE = 'compose';
 const AUTHOR_URL = process.env.AUTHOR_AGENT_URL || 'http://127.0.0.1:4101';
 const SEND_URL = process.env.SEND_AGENT_URL || process.env.EMAIL_AGENT_URL || 'http://127.0.0.1:4102';
-const HITL_URL = process.env.HITL_API_URL || 'http://127.0.0.1:3001/api/hitl-agent';
+const HITL_URL = process.env.HITL_API_URL || 'http://127.0.0.1:3001/api/hitl/request';
 const AMP_BACKEND_URL = process.env.AMP_BACKEND_URL || 'http://127.0.0.1:5000';
 
 async function parseJsonBody(req) {
