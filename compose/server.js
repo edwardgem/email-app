@@ -206,17 +206,8 @@ async function submitHitlAndHandle({
     } catch (_) { /* ignore */ }
     // Transition to wait state while HITL is pending
     try {
+      // AMP backend emits canonical "state - wait" agent-log entry when workitem is created.
       updateMeta(instanceId, { status: 'wait' }, orgId);
-      appendLocalLog(instanceId, 'compose', 'state - wait', orgId);
-      await logEvent({
-        service: SERVICE,
-        level: 'info',
-        event_type: 'state_change',
-        message: 'state - wait',
-        instance_id: instanceId,
-        username,
-        trace_id: traceId
-      });
     } catch (_) { /* ignore */ }
   }
 

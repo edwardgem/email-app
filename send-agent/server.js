@@ -45,6 +45,12 @@ function requireRecipients(to, cc, bcc) {
   return { to: toArr, cc: ccArr, bcc: bccArr };
 }
 
+function isTestingOnlyToAddress(toRecipients) {
+  if (!Array.isArray(toRecipients) || toRecipients.length !== 1) return false;
+  const value = String(toRecipients[0] || '').trim().toLowerCase();
+  return value === 'test' || value === 'testing';
+}
+
 async function sendViaResend({ apiKey, fromEmail, fromName, to, cc, bcc, subject, html }) {
   if (!apiKey) throw new Error('resend_api_key_missing');
   const payload = {
@@ -184,6 +190,26 @@ async function handleSend(req, res) {
   const instanceEnv = loadInstanceEnv(instance_id, orgId);
   const mailCfg = getMailConfigFromEnv(instanceEnv);
 
+  const { artifactsDir, draftHtml } = getInstancePaths(instance_id, orgId);
+  ensureDir(artifactsDir);
+  fs.writeFileSync(draftHtml, html, 'utf8');
+
+  if (isTestingOnlyToAddress(recipients.to)) {
+    const sentAt = new Date().toISOString();
+    const testMessage = 'For testing only - no sending of email';
+    appendLocalLog(instance_id, 'send-agent', testMessage, orgId);
+    await logEvent({
+      service: SERVICE,
+      level: 'info',
+      event_type: 'state_change',
+      message: testMessage,
+      instance_id,
+      username,
+      trace_id
+    });
+    return sendJson(res, 200, { id: `test-${Date.now()}`, sent_at: sentAt, status: 'sent', trace_id: trace_id || null });
+  }
+
   await logEvent({
     service: SERVICE,
     level: 'info',
@@ -193,10 +219,6 @@ async function handleSend(req, res) {
     username,
     trace_id
   });
-
-  const { artifactsDir, draftHtml } = getInstancePaths(instance_id, orgId);
-  ensureDir(artifactsDir);
-  fs.writeFileSync(draftHtml, html, 'utf8');
   appendLocalLog(instance_id, 'send-agent', 'Sending email via provider', orgId);
 
   let sendResult;

@@ -151,7 +151,7 @@ async function callOpenAI({ model, apiKey, endpoint, prompt, options }) {
 
 async function callOllama({ model, endpoint, prompt, options }) {
   const url = (endpoint || 'http://127.0.0.1:11434').replace(/\/$/, '') + '/api/generate';
-  const body = { model, prompt, ...options };
+  const body = { model, prompt, ...(options || {}) };
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -161,9 +161,30 @@ async function callOllama({ model, endpoint, prompt, options }) {
     const text = await res.text().catch(() => '');
     throw new Error(`ollama_error_${res.status}: ${text}`);
   }
-  const data = await res.json();
-  const html = data && data.response ? data.response : '';
-  return { html, model_used: model, reasoning: data };
+  const raw = await res.text();
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch (_) {
+    // Ollama may return NDJSON when stream=true. Aggregate chunks safely.
+    const lines = raw.split('\n').map(s => s.trim()).filter(Boolean);
+    const chunks = [];
+    for (const line of lines) {
+      try {
+        chunks.push(JSON.parse(line));
+      } catch (_) { /* ignore malformed line */ }
+    }
+    if (chunks.length) {
+      const merged = chunks[chunks.length - 1] || {};
+      merged.response = chunks.map(c => (c && c.response ? c.response : '')).join('');
+      data = merged;
+    }
+  }
+  if (!data || typeof data !== 'object') {
+    throw new Error('ollama_invalid_json_response');
+  }
+  const html = data.response || '';
+  return { html, model_used: data.model || model, reasoning: data };
 }
 
 async function generateHtmlWithLLM({ llmCfg, prompt }) {
@@ -382,5 +403,11 @@ function router(req, res) {
 }
 
 http.createServer(router).listen(PORT, () => {
+  // Startup snapshot for PM2 logs: effective service-level LLM config at boot.
+  // Note: per-instance .env values (if present) can still override these at request time.
+  const startupLlmCfg = getLLMConfigFromEnv();
+  console.log(
+    `[author-agent] startup llm provider=${startupLlmCfg.provider || 'unknown'} model=${startupLlmCfg.model || 'unset'} endpoint=${startupLlmCfg.endpoint || 'default'}`
+  );
   console.log(`[author-agent] listening on ${PORT}`);
 });

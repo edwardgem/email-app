@@ -14,6 +14,10 @@ function getLLMConfigFromEnv(overrides = {}) {
   if (optRaw) {
     try { options = JSON.parse(optRaw); } catch (_) { options = {}; }
   }
+  // For Ollama, default to non-streaming JSON unless explicitly overridden.
+  if (provider === 'ollama' && typeof options.stream === 'undefined') {
+    options.stream = false;
+  }
   const apiKey = overrides.OPENAI_API_KEY || process.env.OPENAI_API_KEY || '';
   return { provider, model, endpoint, options, apiKey };
 }
