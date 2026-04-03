@@ -40,6 +40,21 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function normalizeRecipientList(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value !== 'string') return [];
+  const raw = value.trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.filter(Boolean);
+  } catch (_) {}
+  if (raw.includes(',')) {
+    return raw.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+  return [raw];
+}
+
 function mergeConfig(instanceId, payload, orgId) {
   const cfg = loadInstanceConfig(instanceId, orgId);
   const subject = payload.subject || cfg.subject || cfg.EMAIL_SUBJECT || null;
@@ -66,9 +81,9 @@ function markInstanceActive(instanceId, username, orgId) {
 }
 
 function requireRecipients(to, cc, bcc) {
-  const toArr = Array.isArray(to) ? to.filter(Boolean) : [];
-  const ccArr = Array.isArray(cc) ? cc.filter(Boolean) : [];
-  const bccArr = Array.isArray(bcc) ? bcc.filter(Boolean) : [];
+  const toArr = normalizeRecipientList(to);
+  const ccArr = normalizeRecipientList(cc);
+  const bccArr = normalizeRecipientList(bcc);
   if (!toArr.length && !ccArr.length && !bccArr.length) return null;
   return { to: toArr, cc: ccArr, bcc: bccArr };
 }
