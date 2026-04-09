@@ -22,6 +22,8 @@ const AUTHOR_URL = process.env.AUTHOR_AGENT_URL || 'http://127.0.0.1:4101';
 const SEND_URL = process.env.SEND_AGENT_URL || process.env.EMAIL_AGENT_URL || 'http://127.0.0.1:4102';
 const HITL_URL = process.env.HITL_API_URL || 'http://127.0.0.1:3001/api/hitl/request';
 const AMP_BACKEND_URL = process.env.AMP_BACKEND_URL || 'http://127.0.0.1:5000';
+const AMP_API_KEY = process.env.AMP_API_KEY || '';
+const HITL_API_KEY = process.env.HITL_API_KEY || AMP_API_KEY;
 
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -148,9 +150,24 @@ async function callHitlAgent({ instance_id, username, html, hitlConfig, loopInde
     loop: loopIndex + 1
   };
   appendLocalLog(instance_id, 'compose', `HITL submit -> ${HITL_URL}`, orgId);
+  const requiresAmpApiKey = (() => {
+    try {
+      const u = new URL(HITL_URL);
+      return /\/api\/hitl\/request$/i.test(u.pathname) && /localhost|127\.0\.0\.1|amp|inquiryon/i.test(u.host || '');
+    } catch (_) {
+      return /\/api\/hitl\/request$/i.test(String(HITL_URL || ''));
+    }
+  })();
+  if (requiresAmpApiKey && !HITL_API_KEY) {
+    const msg = 'missing_api_key_for_hitl_request';
+    appendLocalLog(instance_id, 'compose', `HITL submission rejected: error=${msg}`, orgId);
+    return { status: 401, body: { status: 'error', error: msg } };
+  }
+  const headers = { 'content-type': 'application/json' };
+  if (HITL_API_KEY) headers['X-API-Key'] = HITL_API_KEY;
   const res = await fetch(HITL_URL, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(payload)
   });
   let body = null;
