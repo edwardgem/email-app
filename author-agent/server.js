@@ -375,7 +375,7 @@ async function handleGenerate(req, res) {
     answer: html,
     trace_id: trace_id || null
   };
-  appendLlmTrace(instance_id, traceEntry, orgId);
+  await appendLlmTrace(instance_id, traceEntry, orgId);
 
   await logEvent({
     service: SERVICE,

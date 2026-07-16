@@ -125,7 +125,41 @@ function loadInstanceConfig(instanceId, orgId) {
   return readJsonSafe(config) || {};
 }
 
-function appendLlmTrace(instanceId, entry, orgId) {
+const AMP_BACKEND_URL = process.env.AMP_BACKEND_URL || 'http://127.0.0.1:5000';
+
+// Writes an LLM trace entry through AMP's llm_trace API instead of the
+// filesystem directly, so amp-backend is the single writer of llm_traces.json
+// (consistent path resolution with the GET reader used by the "click LLM"
+// log panel). Returns true only on a confirmed 2xx response.
+//
+// Uses this agent's own identity-bound X-API-Key (AMP_API_KEY), not the
+// shared X-AMP-Internal-Key -- this is an external agent product, and
+// org_id is derived server-side from that credential (via g.current_user),
+// not sent in the body; orgId is only used for the filesystem fallback path
+// below. Requires AMP_API_KEY to be configured (generate one via AMP's
+// Settings -> API Keys page); without it, trace writes fall back to the
+// local filesystem rather than being silently dropped.
+async function postLlmTrace(instanceId, entry) {
+  const apiKey = process.env.AMP_API_KEY;
+  if (!instanceId || !apiKey) return false;
+  try {
+    const url = `${AMP_BACKEND_URL.replace(/\/$/, '')}/api/agents/${encodeURIComponent(instanceId)}/llm_trace`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+      body: JSON.stringify(entry),
+    });
+    return res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function appendLlmTrace(instanceId, entry, orgId) {
+  if (await postLlmTrace(instanceId, entry)) return;
+  // Fall back to the direct filesystem write (previous behavior) if the API
+  // call didn't succeed -- e.g. backend not yet deployed with this endpoint,
+  // or a network hiccup -- so a trace is never silently lost.
   const { traces } = getInstancePaths(instanceId, orgId);
   ensureDir(path.dirname(traces));
   let records = [];
